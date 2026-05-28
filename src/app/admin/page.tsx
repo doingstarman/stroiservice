@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useState, useRef, useEffect, useCallback } from 'react'
 
 interface UploadResult {
@@ -24,6 +25,12 @@ const PROGRESS_STEPS = [
   { label: 'Сохраняю в базу данных...', pct: 95 },
 ]
 
+async function fetchDocuments(): Promise<Document[]> {
+  const res = await fetch('/api/documents')
+  const data = await res.json()
+  return data.documents ?? []
+}
+
 function ProgressBar({ pct, label }: { pct: number; label: string }) {
   return (
     <div className="space-y-2">
@@ -44,6 +51,8 @@ function ProgressBar({ pct, label }: { pct: number; label: string }) {
 export default function AdminPage() {
   const [file, setFile] = useState<File | null>(null)
   const [name, setName] = useState('')
+  const [docCode, setDocCode] = useState('')
+  const [pageUrl, setPageUrl] = useState('')
   const [uploading, setUploading] = useState(false)
   const [progressStep, setProgressStep] = useState(0)
   const [result, setResult] = useState<UploadResult | null>(null)
@@ -58,9 +67,7 @@ export default function AdminPage() {
   const loadDocuments = useCallback(async () => {
     setDocsLoading(true)
     try {
-      const res = await fetch('/api/documents')
-      const data = await res.json()
-      if (data.documents) setDocuments(data.documents)
+      setDocuments(await fetchDocuments())
     } catch {
       // silently ignore
     } finally {
@@ -69,8 +76,23 @@ export default function AdminPage() {
   }, [])
 
   useEffect(() => {
-    loadDocuments()
-  }, [loadDocuments])
+    let cancelled = false
+
+    fetchDocuments()
+      .then((docs) => {
+        if (!cancelled) setDocuments(docs)
+      })
+      .catch(() => {
+        // silently ignore
+      })
+      .finally(() => {
+        if (!cancelled) setDocsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   function startProgressAnimation() {
     setProgressStep(0)
@@ -101,6 +123,8 @@ export default function AdminPage() {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('name', name.trim())
+    if (docCode.trim()) formData.append('docCode', docCode.trim())
+    if (pageUrl.trim()) formData.append('pageUrl', pageUrl.trim())
 
     try {
       const res = await fetch('/api/ingest', { method: 'POST', body: formData })
@@ -109,6 +133,8 @@ export default function AdminPage() {
       setResult(data)
       setFile(null)
       setName('')
+      setDocCode('')
+      setPageUrl('')
       if (fileRef.current) fileRef.current.value = ''
       await loadDocuments()
     } catch (e) {
@@ -155,9 +181,9 @@ export default function AdminPage() {
       <div className="max-w-2xl mx-auto space-y-8">
         {/* Header */}
         <div className="flex items-center gap-4">
-          <a href="/" className="text-gray-500 hover:text-gray-300 transition-colors text-sm">
+          <Link href="/" className="text-gray-500 hover:text-gray-300 transition-colors text-sm">
             ← Назад
-          </a>
+          </Link>
           <div>
             <h1 className="text-xl font-semibold text-white">Нормативные документы</h1>
             <p className="text-sm text-gray-500">Загрузка и управление базой знаний</p>
@@ -182,6 +208,35 @@ export default function AdminPage() {
               disabled={uploading}
               className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50"
             />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Код документа
+              </label>
+              <input
+                type="text"
+                value={docCode}
+                onChange={(e) => setDocCode(e.target.value)}
+                placeholder="СП 54.13330.2022"
+                disabled={uploading}
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Ссылка на источник
+              </label>
+              <input
+                type="url"
+                value={pageUrl}
+                onChange={(e) => setPageUrl(e.target.value)}
+                placeholder="https://docs.cntd.ru/..."
+                disabled={uploading}
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50"
+              />
+            </div>
           </div>
 
           <div>

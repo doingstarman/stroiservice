@@ -6,6 +6,8 @@ const pdf = require('pdf-parse') as (buffer: Buffer) => Promise<{ text: string; 
 const CHUNK_SIZE = 1200
 const CHUNK_OVERLAP = 150
 const MIN_CHUNK_SIZE = 100
+// text-embedding-3-small limit: ~8191 tokens ≈ 24000 chars (conservative)
+const MAX_CHUNK_CHARS = 6000
 
 function splitByChars(text: string): string[] {
   const chunks: string[] = []
@@ -34,14 +36,27 @@ function mergeParagraphsIntoChunks(paragraphs: string[]): string[] {
   return chunks
 }
 
-function splitText(text: string): string[] {
+function hardTruncate(chunks: string[]): string[] {
+  const result: string[] = []
+  for (const c of chunks) {
+    if (c.length <= MAX_CHUNK_CHARS) {
+      result.push(c)
+    } else {
+      // split oversized chunk by chars
+      result.push(...splitByChars(c))
+    }
+  }
+  return result
+}
+
+export function splitText(text: string): string[] {
   // Нормативные документы: пункты начинаются с \n + цифры
   const byParagraphs = text.split(/\n(?=\d+\.\d+[\s\.]|\d+\s{2,}|[А-Я]\.\d+|Приложение\s[А-ЯA-Z])/)
     .map(p => p.trim())
     .filter(p => p.length > MIN_CHUNK_SIZE)
 
   if (byParagraphs.length > 3) {
-    return mergeParagraphsIntoChunks(byParagraphs)
+    return hardTruncate(mergeParagraphsIntoChunks(byParagraphs))
   }
 
   const byDoubleNewline = text.split(/\n\n+/)
@@ -49,16 +64,24 @@ function splitText(text: string): string[] {
     .filter(p => p.length > MIN_CHUNK_SIZE)
 
   if (byDoubleNewline.length > 3) {
-    return mergeParagraphsIntoChunks(byDoubleNewline)
+    return hardTruncate(mergeParagraphsIntoChunks(byDoubleNewline))
   }
 
   return splitByChars(text)
 }
 
+export interface IngestOptions {
+  pageUrl?: string
+  cntdId?: string
+  altUrl?: string
+  docCode?: string
+}
+
 export async function ingestPdf(
   buffer: Buffer,
   fileName: string,
-  documentName: string
+  documentName: string,
+  options?: IngestOptions
 ): Promise<{ documentId: string; chunkCount: number }> {
   const data = await pdf(buffer)
   // Сохраняем переносы строк для структурного чанкинга
@@ -71,8 +94,9 @@ export async function ingestPdf(
     await client.query('BEGIN')
 
     const docResult = await client.query<{ id: string }>(
-      `INSERT INTO documents (name, file_name, chunk_count) VALUES ($1, $2, $3) RETURNING id`,
-      [documentName, fileName, chunks.length]
+      `INSERT INTO documents (name, file_name, chunk_count, page_url, cntd_id, alt_url, doc_code)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [documentName, fileName, chunks.length, options?.pageUrl ?? null, options?.cntdId ?? null, options?.altUrl ?? null, options?.docCode ?? null]
     )
     const documentId = docResult.rows[0].id
 

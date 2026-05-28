@@ -6,8 +6,11 @@ import remarkGfm from 'remark-gfm'
 
 interface Source {
   document_name: string
+  doc_code?: string
   excerpt: string
   similarity: number
+  page_url?: string
+  page_approx?: number
 }
 
 interface Message {
@@ -17,6 +20,7 @@ interface Message {
   sources?: Source[]
   responseTimeMs?: number
   feedback?: 1 | -1 | null
+  isClarification?: boolean
 }
 
 interface Conversation {
@@ -73,11 +77,11 @@ function SourceCard({ src, query }: { src: Source; query: string }) {
         </span>
       </div>
 
-      <p className="text-xs text-gray-400 leading-relaxed">
+      <div className="text-xs text-gray-400 leading-relaxed">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>
           {highlight(displayText) + (expanded || src.excerpt.length <= 180 ? '' : '...')}
         </ReactMarkdown>
-      </p>
+      </div>
 
       {src.excerpt.length > 180 && (
         <button
@@ -86,6 +90,24 @@ function SourceCard({ src, query }: { src: Source; query: string }) {
         >
           {expanded ? 'Свернуть' : 'Читать полностью'}
         </button>
+      )}
+
+      {src.page_url && (
+        <a
+          href={src.page_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 mt-2 text-xs text-blue-500 hover:text-blue-400 transition-colors"
+        >
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+          Открыть источник
+          {src.page_approx && (
+            <span className="text-gray-600">· стр. ~{src.page_approx}</span>
+          )}
+        </a>
       )}
     </div>
   )
@@ -186,22 +208,32 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [thinkingStep, setThinkingStep] = useState<null | 'analyzing' | 'searching' | 'generating'>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [docCount, setDocCount] = useState<number | null>(null)
   const [dbOk, setDbOk] = useState(true)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const lastUserMessageRef = useRef('')
 
   // Load conversations from localStorage
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('np_conversations')
-      if (stored) {
-        const parsed: Conversation[] = JSON.parse(stored)
-        setConversations(parsed.slice(0, MAX_HISTORY))
+    let cancelled = false
+
+    queueMicrotask(() => {
+      if (cancelled) return
+
+      try {
+        const stored = localStorage.getItem('np_conversations')
+        if (stored) {
+          const parsed: Conversation[] = JSON.parse(stored)
+          setConversations(parsed.slice(0, MAX_HISTORY))
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
+    })
+
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -265,12 +297,12 @@ export default function Home() {
     if (!input.trim() || loading) return
 
     const userMessage = input.trim()
-    lastUserMessageRef.current = userMessage
     setInput('')
 
     const newMessages: Message[] = [...messages, { role: 'user', content: userMessage }]
     setMessages(newMessages)
     setLoading(true)
+    setThinkingStep('analyzing')
 
     const assistantIndex = newMessages.length
     setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
@@ -286,6 +318,7 @@ export default function Home() {
       const decoder = new TextDecoder()
       let sources: Source[] = []
       let serverConvId = currentConvId
+      let isClarification = false
 
       while (true) {
         const { done, value } = await reader.read()
@@ -297,11 +330,16 @@ export default function Home() {
         for (const line of lines) {
           const data = JSON.parse(line.slice(6))
 
-          if (data.type === 'meta') {
+          if (data.type === 'step') {
+            if (data.step === 'searching') setThinkingStep('searching')
+          } else if (data.type === 'meta') {
             serverConvId = data.conversationId
             setCurrentConvId(data.conversationId)
             sources = data.sources
+            isClarification = Boolean(data.isClarification)
+            setThinkingStep('generating')
           } else if (data.type === 'delta') {
+            setThinkingStep(null)
             setMessages((prev) => {
               const updated = [...prev]
               updated[assistantIndex] = {
@@ -311,20 +349,18 @@ export default function Home() {
               return updated
             })
           } else if (data.type === 'done') {
+            setThinkingStep(null)
             setMessages((prev) => {
               const updated = [...prev]
               updated[assistantIndex] = {
                 ...updated[assistantIndex],
-                id: data.messageId,
-                sources,
-                responseTimeMs: data.responseTimeMs,
+                id: data.messageId ?? undefined,
+                sources: isClarification ? [] : sources,
+                responseTimeMs: isClarification ? undefined : data.responseTimeMs,
+                isClarification,
               }
               if (serverConvId) {
-                saveConversation(
-                  serverConvId,
-                  updated,
-                  lastUserMessageRef.current
-                )
+                saveConversation(serverConvId, updated, userMessage)
               }
               return updated
             })
@@ -332,6 +368,7 @@ export default function Home() {
         }
       }
     } catch {
+      setThinkingStep(null)
       setMessages((prev) => {
         const updated = [...prev]
         updated[assistantIndex] = {
@@ -342,6 +379,7 @@ export default function Home() {
       })
     } finally {
       setLoading(false)
+      setThinkingStep(null)
     }
   }
 
@@ -364,6 +402,13 @@ export default function Home() {
     'Требования к противопожарным расстояниям между зданиями',
     'Нормы инсоляции для жилых помещений',
   ]
+
+  function sourceQueryFor(messageIndex: number): string {
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') return messages[i].content
+    }
+    return ''
+  }
 
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100 overflow-hidden">
@@ -494,26 +539,50 @@ export default function Home() {
                   {msg.role === 'user' ? (
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                   ) : msg.content ? (
-                    <div className="prose prose-invert prose-sm max-w-none
-                      prose-headings:text-gray-100 prose-headings:font-semibold
-                      prose-p:text-gray-200 prose-p:leading-relaxed
-                      prose-strong:text-white
-                      prose-li:text-gray-200
-                      prose-code:text-blue-300 prose-code:bg-gray-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
-                      prose-pre:bg-gray-800 prose-pre:border prose-pre:border-gray-700
-                      prose-blockquote:border-l-blue-500 prose-blockquote:text-gray-400
-                      prose-table:text-sm
-                      prose-th:text-gray-300 prose-th:bg-gray-800
-                      prose-td:text-gray-300 prose-td:border-gray-700
-                      prose-hr:border-gray-700
-                      [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-gray-700 [&_th]:px-3 [&_th]:py-2 [&_td]:border [&_td]:border-gray-700 [&_td]:px-3 [&_td]:py-2">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                    </div>
+                    msg.isClarification ? (
+                      <div className="flex items-start gap-2">
+                        <div className="w-5 h-5 bg-yellow-500/20 border border-yellow-500/30 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <svg className="w-3 h-3 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                          </svg>
+                        </div>
+                        <p className="text-sm text-gray-200 leading-relaxed">{msg.content}</p>
+                      </div>
+                    ) : (
+                      <div className="prose prose-invert prose-sm max-w-none
+                        prose-headings:text-gray-100 prose-headings:font-semibold
+                        prose-p:text-gray-200 prose-p:leading-relaxed
+                        prose-strong:text-white
+                        prose-li:text-gray-200
+                        prose-code:text-blue-300 prose-code:bg-gray-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
+                        prose-pre:bg-gray-800 prose-pre:border prose-pre:border-gray-700
+                        prose-blockquote:border-l-blue-500 prose-blockquote:text-gray-400
+                        prose-table:text-sm
+                        prose-th:text-gray-300 prose-th:bg-gray-800
+                        prose-td:text-gray-300 prose-td:border-gray-700
+                        prose-hr:border-gray-700
+                        [&_table]:w-full [&_table]:border-collapse [&_th]:border [&_th]:border-gray-700 [&_th]:px-3 [&_th]:py-2 [&_td]:border [&_td]:border-gray-700 [&_td]:px-3 [&_td]:py-2">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                      </div>
+                    )
                   ) : (
-                    <div className="flex items-center gap-1.5 py-1">
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 typing-dot" />
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 typing-dot" />
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-400 typing-dot" />
+                    <div className="flex flex-col gap-2 py-1">
+                      {thinkingStep && (
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <svg className="w-3 h-3 animate-spin text-blue-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                          </svg>
+                          {thinkingStep === 'analyzing' && 'Анализирую вопрос...'}
+                          {thinkingStep === 'searching' && 'Ищу в нормативах...'}
+                          {thinkingStep === 'generating' && 'Формирую ответ...'}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-blue-400 typing-dot" />
+                        <div className="w-1.5 h-1.5 rounded-full bg-blue-400 typing-dot" />
+                        <div className="w-1.5 h-1.5 rounded-full bg-blue-400 typing-dot" />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -523,7 +592,7 @@ export default function Home() {
                   <div className="mt-3 space-y-2">
                     <p className="text-xs text-gray-500 font-medium">Источники:</p>
                     {msg.sources.map((src, i) => (
-                      <SourceCard key={i} src={src} query={lastUserMessageRef.current} />
+                      <SourceCard key={i} src={src} query={sourceQueryFor(idx)} />
                     ))}
                   </div>
                 )}

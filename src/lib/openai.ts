@@ -5,7 +5,8 @@ export const openai = new OpenAI({
 })
 
 export const EMBEDDING_MODEL = 'text-embedding-3-small'
-export const CHAT_MODEL = 'gpt-4o'
+export const CHAT_MODEL = 'gpt-5.4-mini'
+export const INTENT_MODEL = 'gpt-4o-mini'
 
 export async function embed(text: string): Promise<number[]> {
   const response = await openai.embeddings.create({

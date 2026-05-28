@@ -16,7 +16,7 @@ export async function GET() {
         COUNT(c.id)::int AS chunk_count,
         d.created_at
       FROM documents d
-      LEFT JOIN chunks c ON c.document_id = d.id
+      LEFT JOIN document_chunks c ON c.document_id = d.id
       GROUP BY d.id, d.name, d.created_at
       ORDER BY d.created_at DESC
     `)
@@ -28,20 +28,29 @@ export async function GET() {
 }
 
 export async function DELETE(req: Request) {
-  try {
-    const { id } = await req.json()
-    if (!id) return Response.json({ error: 'id обязателен' }, { status: 400 })
+  const { id } = await req.json().catch(() => ({}))
+  if (!id) return Response.json({ error: 'id обязателен' }, { status: 400 })
 
-    const check = await pool.query('SELECT id FROM documents WHERE id = $1', [id])
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+
+    const check = await client.query('SELECT id FROM documents WHERE id = $1', [id])
     if (check.rows.length === 0) {
+      await client.query('ROLLBACK')
       return Response.json({ error: 'Документ не найден' }, { status: 404 })
     }
 
-    await pool.query(`DELETE FROM chunks WHERE document_id = $1`, [id])
-    await pool.query(`DELETE FROM documents WHERE id = $1`, [id])
+    await client.query('DELETE FROM document_chunks WHERE document_id = $1', [id])
+    await client.query('DELETE FROM documents WHERE id = $1', [id])
+    await client.query('COMMIT')
+
     return Response.json({ ok: true })
   } catch (err) {
+    await client.query('ROLLBACK')
     console.error('DELETE /api/documents error:', err)
     return Response.json({ error: 'Ошибка удаления документа' }, { status: 500 })
+  } finally {
+    client.release()
   }
 }
