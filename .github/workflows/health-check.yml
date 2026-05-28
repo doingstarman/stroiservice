@@ -1,0 +1,27 @@
+name: Health Check
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # every 15 minutes
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Ping production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check /api/health
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ vars.PRODUCTION_URL }}/api/health" \
+            --max-time 15)
+
+          echo "HTTP status: $RESPONSE"
+
+          if [ "$RESPONSE" != "200" ]; then
+            echo "::error::Health check failed — HTTP $RESPONSE"
+            exit 1
+          fi
+
+          # Print full response for logs
+          curl -s "${{ vars.PRODUCTION_URL }}/api/health" | python3 -m json.tool
