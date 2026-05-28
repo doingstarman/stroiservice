@@ -11,11 +11,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@langchain/community": "^1.1.28",
-    "@langchain/openai": "^1.4.6",
     "@types/pdf-parse": "^1.1.5",
     "@types/pg": "^8.20.0",
-    "langchain": "^1.4.1",
     "langfuse": "^3.38.20",
     "next": "16.2.6",
     "openai": "^6.38.0",
