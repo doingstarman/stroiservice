@@ -12,9 +12,16 @@ jobs:
     steps:
       - name: Check /api/health
         run: |
+          URL="${{ vars.PRODUCTION_URL }}"
+
+          if [ -z "$URL" ]; then
+            echo "PRODUCTION_URL not set — skipping health check"
+            echo "Set it in: GitHub repo → Settings → Variables → Actions"
+            exit 0
+          fi
+
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "${{ vars.PRODUCTION_URL }}/api/health" \
-            --max-time 15)
+            "$URL/api/health" --max-time 15)
 
           echo "HTTP status: $RESPONSE"
 
@@ -23,5 +30,4 @@ jobs:
             exit 1
           fi
 
-          # Print full response for logs
-          curl -s "${{ vars.PRODUCTION_URL }}/api/health" | python3 -m json.tool
+          curl -s "$URL/api/health" | python3 -m json.tool
